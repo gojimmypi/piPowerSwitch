@@ -1,13 +1,12 @@
 #include "piPowerSwitch.h"
 // add to /etc/rc.local
+
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <fcntl.h>
-#include <stdio.h>
-#include <stdlib.h>
-// #include <unistd.h>
-// #include <math.h>
-#include <stdbool.h>
+#include <fcntl.h> // file stuff
+#include <stdio.h> // printf
+// #include <stdlib.h>
+#include <stdbool.h> // bool
 
 #define IN  0
 #define OUT 1
@@ -15,29 +14,33 @@
 #define LOW  0
 #define HIGH 1
 
-#define PIN  26 /* P1-37 */
-#define POUT 16  /* P1-07 */
+#define PIN  26 /* Header Pin 37 = GPIO 26 */
+#define POUT 16 /* Header Pin 36 = GPIO 16 */
 
 int shutdownPin = PIN; // the default is PIN but can be overwritten with commandline param
+int shutdownCount = 0;
+bool isVerboseMode = false;
 
-// based on RPi  GPIO code sample at http://elinux.org/RPi_GPIO_Code_Samples
+// based on RPi GPIO code sample at http://elinux.org/RPi_GPIO_Code_Samples
 #define BUFFER_MAX 3
 static int GPIOExport(int pin) {
-printf("GPIO Export %d\n\r",pin);
-	char buffer[BUFFER_MAX];
-	ssize_t bytes_written;
-	int fd;
+  if (isVerboseMode) {
+    printf("GPIO Export %d\n\r",pin);
+  }
+  char buffer[BUFFER_MAX];
+  ssize_t bytes_written;
+  int fd;
 
-	fd = open("/sys/class/gpio/export", O_WRONLY);
-	if (-1 == fd) {
-		fprintf(stderr, "Failed to open export for writing!\n");
-		return(-1);
-	}
+  fd = open("/sys/class/gpio/export", O_WRONLY);
+  if (-1 == fd) {
+    fprintf(stderr, "Failed to open export for writing!\n");
+    return(-1);
+  }
 
-	bytes_written = snprintf(buffer, BUFFER_MAX, "%d", pin);
-	write(fd, buffer, bytes_written);
-	close(fd);
-	return(0);
+  bytes_written = snprintf(buffer, BUFFER_MAX, "%d", pin);
+  write(fd, buffer, bytes_written);
+  close(fd);
+  return(0);
 }
 
 
@@ -61,7 +64,9 @@ static int GPIOUnexport(int pin){
 
 static int GPIODirection(int pin, int dir){
 #define DIRECTION_MAX 35
-  printf("GPIO Direction %d\n\r",pin);
+  if (isVerboseMode) {
+    printf("GPIO Direction %d\n\r",pin);
+  }
   //                                       0123456
   static const char s_directions_str[]  = "in\0out";
   char path[DIRECTION_MAX];
@@ -69,10 +74,10 @@ static int GPIODirection(int pin, int dir){
 
   snprintf(path, DIRECTION_MAX, "/sys/class/gpio/gpio%d/direction\0", pin);
 
-  printf(path);
-  printf("\r\n");
-
-  usleep(100000); // this is a complete HACK! without this delay, app fails every other time?? why??
+  if (isVerboseMode) {
+    printf(path);
+    printf("\r\n");
+  }
 
   fd = open(path, O_WRONLY);
   if (-1 == fd) {
@@ -90,8 +95,9 @@ static int GPIODirection(int pin, int dir){
   return(0);
 }
 
-static int GPIORead(int pin) {
 #define VALUE_MAX 30
+//******************************************************************************/
+static int GPIORead(int pin) {
   // printf("GPIO Read %d\n\r",pin);
   char path[VALUE_MAX];
   char value_str[3];
@@ -115,7 +121,9 @@ static int GPIORead(int pin) {
 }
 
 static int GPIOWrite(int pin, int value) {
-  printf("GPIO Write %d\n\r",pin);
+  if (isVerboseMode) {
+    printf("GPIO Write %d\n\r",pin);
+  }
   static const char s_values_str[] = "01";
 
   char path[VALUE_MAX];
@@ -163,14 +171,33 @@ int main(int argc, char *argv[])
 {
   int repeat = 4;
 
+  // we apparently need to get GPIO pion first, as getopt appears to molest args!
   if ( (argc > 1) && (isValidGPIO(argv[1])) ) {
     shutdownPin = atoi(argv[1]);
-    printf("Checking for shutdown on GPIO%d...\n\r",shutdownPin);
+    if (isVerboseMode) {
+      printf("Using alternate GPIO%d...\n\r",shutdownPin);
+    }
   }
   else {
     shutdownPin = PIN;
   }
   printf("Pi Shutdown Check on GPIO %d!\r\n", shutdownPin);
+
+  int opt;
+  while ((opt = getopt(argc, argv, "v")) != -1) {
+    switch (opt) {
+      case 'v': {
+         isVerboseMode = true;
+         printf("Verbose mode on\n");
+         break;
+      }
+      case 'h': {}; break;
+      default:
+         fprintf(stderr, "Usage: %s [-vh]\n", argv[0]);
+            exit(EXIT_FAILURE);
+        }
+    }
+
 
 
   /*
@@ -180,6 +207,17 @@ int main(int argc, char *argv[])
     printf("Error 1");
     return(1);
   }
+
+  // perhaps we need to check that exported directories exist?
+  //if( access( fname, F_OK ) != -1 ) {
+      // file exists
+  //} else {
+      // file doesn't exist
+  //}
+
+  // sleep for 10ms, time for exports to "stabilize" ??
+  usleep(100000); // this is a complete HACK! without this delay, app fails every other time?? why??
+
 
   /*
   * Set GPIO directions
@@ -201,8 +239,10 @@ int main(int argc, char *argv[])
     /*
     * Read GPIO value
     */
-    printf("I'm reading %d in GPIO %d\n", GPIORead(PIN), PIN);
-
+    if (isVerboseMode) {
+      printf("Found value %d in GPIO %d\n", GPIORead(PIN), PIN);
+    }
+    shutdownCount += GPIORead(PIN);
     usleep(500 * 1000);
   } while (repeat--);
 
@@ -223,8 +263,16 @@ int main(int argc, char *argv[])
     return(4);
   }
   else {
-    printf("Done! \r\n");
+    if (isVerboseMode) {
+      printf("Done! \r\n");
+    }
   }
 
+  if (shutdownCount >= 4) {
+    printf("Shutdown %d!\n\r",shutdownCount);
+    // TODO put shutdown command here, add to 
+  }
   return(0);
 }
+
+
